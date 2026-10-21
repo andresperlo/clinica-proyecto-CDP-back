@@ -1,0 +1,62 @@
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RolUsuario {
+  ADMIN
+  SECRETARIA
+  PROFESIONAL
+  MEDICO
+  PROFESOR_GIMNASIO
+  PACIENTE
+}
+
+enum EstadoUsuario {
+  ACTIVO
+  INACTIVO
+  BLOQUEADO
+}
+
+enum TipoProfesional {
+  MEDICO
+  NUTRICIONISTA
+  PSICOLOGO
+  PROFESOR_GIMNASIO
+  OTRO
+}
+
+model Usuario {
+  id            String        @id @default(uuid()) @db.Uuid
+  nombre        String
+  apellido      String
+  email         String        @unique
+  passwordHash  String
+  rol           RolUsuario    @default(PACIENTE)
+  estado        EstadoUsuario @default(ACTIVO)
+  creadoEn      DateTime      @default(now())
+  actualizadoEn DateTime      @updatedAt
+
+  profesional   Profesional?
+
+  @@map("usuarios")
+}
+
+model Profesional {
+  id            String           @id @default(uuid()) @db.Uuid
+  usuarioId     String           @unique @db.Uuid
+  tipo          TipoProfesional
+  matricula     String?
+  activo        Boolean          @default(true)
+  creadoEn      DateTime         @default(now())
+  actualizadoEn DateTime         @updatedAt
+
+  usuario       Usuario          @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
+
+  @@map("profesionales")
+}
