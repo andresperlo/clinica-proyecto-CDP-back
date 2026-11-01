@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "TipoEventoSeguridad" ADD VALUE 'CODIGO_APROBACION_FALLIDO';

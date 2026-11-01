@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "TipoEventoSeguridad" ADD VALUE 'SOLICITUD_ACCESO_EXPIRADA';

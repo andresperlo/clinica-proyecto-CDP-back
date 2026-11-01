@@ -749,21 +749,15 @@ export async function register(
 
 export async function solicitarCodigoSegundoDispositivo(
   usuarioId: string,
-
   dispositivo: DatosDispositivo = {},
 ): Promise<ResultadoSolicitudSegundoDispositivo> {
   const ahora = new Date();
 
   const usuario = await prisma.usuario.findUnique({
-    where: {
-      id: usuarioId,
-    },
-
+    where: { id: usuarioId },
     select: {
       id: true,
-
       email: true,
-
       estado: true,
     },
   });
@@ -772,73 +766,12 @@ export async function solicitarCodigoSegundoDispositivo(
     throw new Error("No se pudo procesar la solicitud");
   }
 
-  const sesionActiva = await prisma.sesion.findFirst({
-    where: {
-      usuarioId,
-
-      estado: "ACTIVA",
-
-      venceEn: {
-        gt: ahora,
-      },
-
-      dispositivos: {
-        some: {
-          estado: "ACTIVO",
-
-          esPrincipal: true,
-        },
-      },
-    },
-
-    select: {
-      id: true,
-    },
-  });
-
-  if (!sesionActiva) {
-    throw new Error("No existe un dispositivo principal autorizado activo");
-  }
-
-  const bloqueo = await prisma.codigoVerificacion.findFirst({
-    where: {
-      usuarioId,
-
-      estado: "BLOQUEADO",
-
-      bloqueadoHasta: {
-        gt: ahora,
-      },
-    },
-
-    orderBy: {
-      creadoEn: "desc",
-    },
-
-    select: {
-      bloqueadoHasta: true,
-    },
-  });
-
-  if (bloqueo?.bloqueadoHasta) {
-    throw new Error(
-      "Demasiados intentos. Debés esperar cinco minutos antes de solicitar otro código.",
-    );
-  }
-
-  // PIN enviado por correo.
-
+  // Generar código y credenciales temporales.
   const codigoEmail = generarCodigoVerificacion();
-
   const codigoEmailHash = calcularHashCodigo(codigoEmail);
 
-  // Secreto temporal para identificar la solicitud.
-
   const challengeToken = generarTokenSeguro();
-
   const challengeTokenHash = calcularHashToken(challengeToken);
-
-  // Generar las tres opciones de aprobación.
 
   const { codigoCorrecto, opciones } = generarOpcionesAprobacion();
 
@@ -850,49 +783,83 @@ export async function solicitarCodigoSegundoDispositivo(
 
   const venceSolicitud = new Date(ahora.getTime() + DURACION_SOLICITUD_MS);
 
+  // Serializar todas las solicitudes del mismo usuario.
   const solicitud = await prisma.$transaction(async (tx) => {
-    // Evita solicitudes duplicadas cuando el usuario inicia el flujo desde dos equipos.
+    await tx.$queryRaw`
+      SELECT pg_advisory_xact_lock(
+        hashtextextended(${usuarioId}, 1)
+      )
+    `;
 
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${usuarioId}, 1))`;
+    // Comprobar que exista un dispositivo principal autorizado.
+    const sesionActiva = await tx.sesion.findFirst({
+      where: {
+        usuarioId,
+        estado: "ACTIVA",
+        venceEn: { gt: ahora },
+        dispositivos: {
+          some: {
+            estado: "ACTIVO",
+            esPrincipal: true,
+          },
+        },
+      },
+      select: { id: true },
+    });
 
+    if (!sesionActiva) {
+      throw new Error("No existe un dispositivo principal autorizado activo");
+    }
+
+    // Verificar si el usuario todavía está bloqueado.
+    const bloqueo = await tx.codigoVerificacion.findFirst({
+      where: {
+        usuarioId,
+        estado: "BLOQUEADO",
+        bloqueadoHasta: { gt: ahora },
+      },
+      orderBy: { creadoEn: "desc" },
+      select: { bloqueadoHasta: true },
+    });
+
+    if (bloqueo?.bloqueadoHasta) {
+      throw new Error(
+        "Demasiados intentos. Debés esperar cinco minutos antes de solicitar otro código.",
+      );
+    }
+
+    // Cancelar solicitudes anteriores todavía vigentes.
     await tx.solicitudAcceso.updateMany({
-      where: { usuarioId, estado: { in: ["PENDIENTE", "APROBADA"] } },
-
+      where: {
+        usuarioId,
+        estado: { in: ["PENDIENTE", "APROBADA"] },
+      },
       data: {
         estado: "CANCELADA",
-
         codigoAprobacionHash: null,
-
         codigoAprobacionCifrado: null,
       },
     });
 
-    // Expirar códigos anteriores.
-
+    // Invalidar códigos anteriores.
     await tx.codigoVerificacion.updateMany({
       where: {
         usuarioId,
-
-        estado: "PENDIENTE",
+        estado: { in: ["PENDIENTE", "BLOQUEADO"] },
       },
-
       data: {
         estado: "EXPIRADO",
       },
     });
 
+    // Crear la nueva solicitud.
     const nuevaSolicitud = await tx.solicitudAcceso.create({
       data: {
         usuarioId,
-
         estado: "PENDIENTE",
-
         venceEn: venceSolicitud,
-
         challengeTokenHash,
-
         codigoAprobacionHash,
-
         codigoAprobacionCifrado,
 
         ...(dispositivo.dispositivo !== undefined && {
@@ -913,26 +880,22 @@ export async function solicitarCodigoSegundoDispositivo(
       },
     });
 
+    // Crear el código de verificación del correo.
     await tx.codigoVerificacion.create({
       data: {
         usuarioId,
-
         solicitudAccesoId: nuevaSolicitud.id,
-
         codigoHash: codigoEmailHash,
-
         estado: "PENDIENTE",
-
         venceEn: venceCodigo,
       },
     });
 
+    // Registrar el evento de seguridad.
     await tx.eventoSeguridad.create({
       data: {
         usuarioId,
-
         tipo: "SEGUNDO_DISPOSITIVO_SOLICITADO",
-
         descripcion: "Solicitud de acceso desde un segundo dispositivo",
 
         ...(dispositivo.ip !== undefined && {
@@ -948,15 +911,14 @@ export async function solicitarCodigoSegundoDispositivo(
     return nuevaSolicitud;
   });
 
+  // Enviar el código una vez confirmada la transacción.
   try {
     await enviarCodigoVerificacion(usuario.email, codigoEmail);
 
     await prisma.eventoSeguridad.create({
       data: {
         usuarioId,
-
         tipo: "CODIGO_EMAIL_ENVIADO",
-
         descripcion: "Código de verificación enviado al correo registrado",
 
         ...(dispositivo.ip !== undefined && {
@@ -971,36 +933,42 @@ export async function solicitarCodigoSegundoDispositivo(
   } catch {
     await prisma.$transaction(async (tx) => {
       const cancelada = await tx.solicitudAcceso.updateMany({
-        where: { id: solicitud.id, estado: "PENDIENTE" },
-
+        where: {
+          id: solicitud.id,
+          estado: "PENDIENTE",
+        },
         data: {
           estado: "CANCELADA",
-
           codigoAprobacionHash: null,
-
           codigoAprobacionCifrado: null,
         },
       });
 
       if (cancelada.count === 1) {
         await tx.codigoVerificacion.updateMany({
-          where: { solicitudAccesoId: solicitud.id, estado: "PENDIENTE" },
-
+          where: {
+            solicitudAccesoId: solicitud.id,
+            estado: { in: ["PENDIENTE", "BLOQUEADO"] },
+          },
           data: { estado: "EXPIRADO" },
         });
+
+        await tx.eventoSeguridad.create({
+          data: {
+            usuarioId,
+            tipo: "CODIGO_EMAIL_FALLIDO",
+            descripcion: "No se pudo enviar el código de verificación",
+
+            ...(dispositivo.ip !== undefined && {
+              ip: dispositivo.ip,
+            }),
+
+            ...(dispositivo.dispositivo !== undefined && {
+              dispositivo: dispositivo.dispositivo,
+            }),
+          },
+        });
       }
-
-      await tx.eventoSeguridad.create({
-        data: {
-          usuarioId,
-
-          tipo: "CODIGO_EMAIL_FALLIDO",
-
-          descripcion: "No se pudo enviar el código de verificación",
-
-          ...(dispositivo.ip !== undefined && { ip: dispositivo.ip }),
-        },
-      });
     });
 
     throw new Error("No se pudo enviar el código de verificación");
@@ -1008,13 +976,9 @@ export async function solicitarCodigoSegundoDispositivo(
 
   return {
     solicitudId: solicitud.id,
-
     challengeToken,
-
     opciones,
-
     venceEn: venceSolicitud,
-
     emailDestino: enmascararEmail(usuario.email),
   };
 }
@@ -1027,12 +991,14 @@ export async function solicitarCodigoSegundoDispositivo(
 
 export async function verificarCodigoSegundoDispositivo(
   usuarioId: string,
-
   solicitudId: string,
-
   codigo: string,
-
   challengeToken: string,
+  datosDispositivo: {
+    ip?: string;
+    dispositivo?: string;
+    navegador?: string;
+  } = {},
 ) {
   if (!/^\d{6}$/.test(codigo)) {
     throw new Error("El código debe contener seis números");
@@ -1047,28 +1013,17 @@ export async function verificarCodigoSegundoDispositivo(
   const solicitud = await prisma.solicitudAcceso.findFirst({
     where: {
       id: solicitudId,
-
       usuarioId,
-
       estado: "PENDIENTE",
-
-      venceEn: {
-        gt: ahora,
-      },
-
+      venceEn: { gt: ahora },
       challengeTokenHash: calcularHashToken(challengeToken),
     },
-
     include: {
       codigos: {
         where: {
-          estado: "PENDIENTE",
+          estado: { in: ["PENDIENTE", "BLOQUEADO"] },
         },
-
-        orderBy: {
-          creadoEn: "desc",
-        },
-
+        orderBy: { creadoEn: "desc" },
         take: 1,
       },
     },
@@ -1080,19 +1035,41 @@ export async function verificarCodigoSegundoDispositivo(
     throw new Error("La solicitud o el código ya no son válidos");
   }
 
-  if (registro.bloqueadoHasta && registro.bloqueadoHasta > ahora) {
-    throw new Error("El código está bloqueado. Debés esperar cinco minutos.");
+  if (registro.estado === "BLOQUEADO") {
+    if (registro.bloqueadoHasta && registro.bloqueadoHasta > ahora) {
+      throw new Error("El código está bloqueado. Debés esperar cinco minutos.");
+    }
+
+    throw new Error("El código está bloqueado. Solicitá uno nuevo.");
   }
 
   if (registro.venceEn <= ahora) {
-    await prisma.codigoVerificacion.update({
-      where: {
-        id: registro.id,
-      },
+    await prisma.$transaction(async (tx) => {
+      const actualizacion = await tx.codigoVerificacion.updateMany({
+        where: {
+          id: registro.id,
+          estado: "PENDIENTE",
+          venceEn: { lte: ahora },
+        },
+        data: { estado: "EXPIRADO" },
+      });
 
-      data: {
-        estado: "EXPIRADO",
-      },
+      if (actualizacion.count === 1) {
+        await tx.eventoSeguridad.create({
+          data: {
+            usuarioId,
+            tipo: "CODIGO_EMAIL_EXPIRADO",
+            descripcion:
+              "El código de verificación del correo electrónico venció",
+            ...(datosDispositivo.ip && {
+              ip: datosDispositivo.ip,
+            }),
+            ...(datosDispositivo.dispositivo && {
+              dispositivo: datosDispositivo.dispositivo,
+            }),
+          },
+        });
+      }
     });
 
     throw new Error("El código venció. Solicitá uno nuevo");
@@ -1102,48 +1079,55 @@ export async function verificarCodigoSegundoDispositivo(
 
   if (!codigoCorrecto) {
     const nuevosIntentos = registro.intentos + 1;
-
     const bloqueoAlcanzado = nuevosIntentos >= MAX_INTENTOS_CODIGO;
 
-    await prisma.$transaction(async (tx) => {
-      const resultado = await tx.codigoVerificacion.updateMany({
+    const resultado = await prisma.$transaction(async (tx) => {
+      const actualizacion = await tx.codigoVerificacion.updateMany({
         where: {
           id: registro.id,
-
           estado: "PENDIENTE",
-
           intentos: registro.intentos,
+          venceEn: { gt: ahora },
         },
-
         data: {
-          intentos: {
-            increment: 1,
-          },
-
+          intentos: { increment: 1 },
           ...(bloqueoAlcanzado
             ? {
                 estado: "BLOQUEADO" as const,
-
                 bloqueadoHasta: new Date(ahora.getTime() + DURACION_BLOQUEO_MS),
               }
             : {}),
         },
       });
 
-      if (resultado.count === 1) {
-        await tx.eventoSeguridad.create({
-          data: {
-            usuarioId,
-
-            tipo: "CODIGO_EMAIL_FALLIDO",
-
-            descripcion: bloqueoAlcanzado
-              ? "Código incorrecto. Se alcanzó el máximo de intentos"
-              : "Código de verificación incorrecto",
-          },
-        });
+      if (actualizacion.count !== 1) {
+        return { actualizado: false };
       }
+
+      await tx.eventoSeguridad.create({
+        data: {
+          usuarioId,
+          tipo: "CODIGO_EMAIL_FALLIDO",
+          descripcion: bloqueoAlcanzado
+            ? "Código incorrecto. Se alcanzó el máximo de intentos"
+            : "Código de verificación incorrecto",
+          ...(datosDispositivo.ip && {
+            ip: datosDispositivo.ip,
+          }),
+          ...(datosDispositivo.dispositivo && {
+            dispositivo: datosDispositivo.dispositivo,
+          }),
+        },
+      });
+
+      return { actualizado: true };
     });
+
+    if (!resultado.actualizado) {
+      throw new Error(
+        "El código fue modificado por otra solicitud. Intentá nuevamente.",
+      );
+    }
 
     if (bloqueoAlcanzado) {
       throw new Error(
@@ -1158,17 +1142,12 @@ export async function verificarCodigoSegundoDispositivo(
     const resultado = await tx.codigoVerificacion.updateMany({
       where: {
         id: registro.id,
-
         estado: "PENDIENTE",
-
-        venceEn: {
-          gt: ahora,
-        },
+        intentos: registro.intentos,
+        venceEn: { gt: ahora },
       },
-
       data: {
         estado: "UTILIZADO",
-
         utilizadoEn: ahora,
       },
     });
@@ -1196,17 +1175,20 @@ export async function verificarCodigoSegundoDispositivo(
     await tx.eventoSeguridad.create({
       data: {
         usuarioId,
-
         tipo: "CODIGO_EMAIL_VALIDADO",
-
         descripcion: "Código de verificación validado correctamente",
+        ...(datosDispositivo.ip && {
+          ip: datosDispositivo.ip,
+        }),
+        ...(datosDispositivo.dispositivo && {
+          dispositivo: datosDispositivo.dispositivo,
+        }),
       },
     });
   });
 
   return {
     verificado: true,
-
     mensaje:
       "Correo verificado. Falta la aprobación desde el dispositivo autorizado.",
   };
@@ -1323,6 +1305,7 @@ export async function aprobarSegundoDispositivo(
 
   const resultado = await prisma.$transaction(async (tx) => {
     await bloquearSesion(tx, sesionId);
+
     await validarHeartbeatPrincipal(
       tx,
       usuarioId,
@@ -1348,15 +1331,15 @@ export async function aprobarSegundoDispositivo(
     if (
       !compararHashAprobacion(codigoElegido, solicitud.codigoAprobacionHash)
     ) {
-      // Devolver en vez de lanzar el error: así la auditoría se confirma.
       await tx.eventoSeguridad.create({
         data: {
           usuarioId,
-          tipo: "SEGUNDO_DISPOSITIVO_RECHAZADO",
+          tipo: "CODIGO_APROBACION_FALLIDO",
           descripcion:
             "El dispositivo principal ingresó un número de aprobación incorrecto",
         },
       });
+
       return { codigoIncorrecto: true };
     }
 
@@ -1367,6 +1350,7 @@ export async function aprobarSegundoDispositivo(
         estado: "PENDIENTE",
         venceEn: { gt: ahora },
         emailVerificadoEn: { not: null },
+        codigoAprobacionHash: solicitud.codigoAprobacionHash,
       },
       data: {
         estado: "APROBADA",
@@ -1418,6 +1402,7 @@ export async function rechazarSegundoDispositivo(
 
   await prisma.$transaction(async (tx) => {
     await bloquearSesion(tx, sesionId);
+
     await validarHeartbeatPrincipal(
       tx,
       usuarioId,
@@ -1431,6 +1416,7 @@ export async function rechazarSegundoDispositivo(
         id: solicitudId,
         usuarioId,
         estado: "PENDIENTE",
+        emailVerificadoEn: { not: null },
         venceEn: { gt: ahora },
       },
       data: {
@@ -1450,7 +1436,9 @@ export async function rechazarSegundoDispositivo(
         solicitudAccesoId: solicitudId,
         estado: { in: ["PENDIENTE", "BLOQUEADO"] },
       },
-      data: { estado: "EXPIRADO" },
+      data: {
+        estado: "EXPIRADO",
+      },
     });
 
     await tx.eventoSeguridad.create({
@@ -1577,58 +1565,62 @@ export async function cancelarSolicitudSegundoDispositivo(
 
 export async function completarVinculacionSegundoDispositivo(
   solicitudId: string,
-
   challengeToken: string,
-
   datosDispositivo: DatosDispositivo = {},
 ): Promise<ResultadoSesion> {
-  if (!challengeToken || challengeToken.length < 32)
+  if (!challengeToken || challengeToken.length < 32) {
     throw new Error("Solicitud de acceso inválida");
+  }
 
   const ahora = new Date();
 
   const challengeTokenHash = calcularHashToken(challengeToken);
 
   const token = generarTokenSeguro();
-
   const tokenHash = calcularHashToken(token);
 
   const resultado = await prisma.$transaction(async (tx) => {
+    // 1. Obtener la solicitud aprobada.
     const solicitudInicial = await tx.solicitudAcceso.findFirst({
       where: {
         id: solicitudId,
         challengeTokenHash,
         estado: "APROBADA",
-
         emailVerificadoEn: { not: null },
         venceEn: { gt: ahora },
       },
-
-      select: { id: true, usuarioId: true, aprobadaPorSesionId: true },
+      select: {
+        id: true,
+        usuarioId: true,
+        aprobadaPorSesionId: true,
+      },
     });
 
     if (!solicitudInicial?.aprobadaPorSesionId) {
       throw new Error("La solicitud no existe, venció o no fue aprobada");
     }
 
-    // Serializar con heartbeat, aprobación y revocación de la sesión.
-
+    // 2. Bloquear la sesión para evitar operaciones simultáneas.
     await bloquearSesion(tx, solicitudInicial.aprobadaPorSesionId);
 
+    // 3. Volver a comprobar la solicitud después del bloqueo.
     const solicitud = await tx.solicitudAcceso.findFirst({
       where: {
         id: solicitudId,
+        usuarioId: solicitudInicial.usuarioId,
         challengeTokenHash,
         estado: "APROBADA",
-
         emailVerificadoEn: { not: null },
         venceEn: { gt: new Date() },
+        aprobadaPorSesionId: solicitudInicial.aprobadaPorSesionId,
       },
     });
 
-    if (!solicitud?.aprobadaPorSesionId)
+    if (!solicitud?.aprobadaPorSesionId) {
       throw new Error("La solicitud dejó de estar aprobada");
+    }
 
+    // 4. Validar que la sesión original siga activa.
     const ahoraValidacion = new Date();
 
     const limiteHeartbeat = new Date(
@@ -1639,63 +1631,64 @@ export async function completarVinculacionSegundoDispositivo(
       where: {
         id: solicitud.aprobadaPorSesionId,
         usuarioId: solicitud.usuarioId,
-
         estado: "ACTIVA",
         venceEn: { gt: ahoraValidacion },
-
         ultimoHeartbeat: { gt: limiteHeartbeat },
         principalDesconectadoEn: null,
       },
     });
 
-    if (!sesion?.dispositivoPrincipalId)
+    if (!sesion?.dispositivoPrincipalId) {
       throw new Error(
         "La sesión principal ya no está activa o perdió conexión",
       );
+    }
 
+    // 5. Comprobar que el dispositivo principal siga autorizado.
     const principal = await tx.dispositivo.findFirst({
       where: {
         id: sesion.dispositivoPrincipalId,
         usuarioId: solicitud.usuarioId,
-
         sesionId: sesion.id,
         estado: "ACTIVO",
         esPrincipal: true,
       },
+      select: { id: true },
     });
 
-    if (!principal)
+    if (!principal) {
       throw new Error("El dispositivo principal ya no está autorizado");
+    }
 
-    // Consumir la solicitud ANTES de crear el dispositivo; todo revierte si falla.
-
+    // 6. Consumir la solicitud una sola vez.
     const actualizacion = await tx.solicitudAcceso.updateMany({
       where: {
         id: solicitud.id,
+        usuarioId: solicitud.usuarioId,
         estado: "APROBADA",
         challengeTokenHash,
-
+        emailVerificadoEn: { not: null },
+        aprobadaPorSesionId: sesion.id,
         venceEn: { gt: ahoraValidacion },
       },
-
       data: {
         estado: "COMPLETADA",
         completadaEn: ahoraValidacion,
-
         codigoAprobacionHash: null,
         codigoAprobacionCifrado: null,
       },
     });
 
-    if (actualizacion.count !== 1)
+    if (actualizacion.count !== 1) {
       throw new Error("La solicitud ya fue completada por otro proceso");
+    }
 
+    // 7. Crear el segundo dispositivo dentro de la sesión original.
     await tx.dispositivo.create({
       data: {
         usuarioId: solicitud.usuarioId,
         sesionId: sesion.id,
         tokenHash,
-
         estado: "ACTIVO",
         esPrincipal: false,
         ultimoHeartbeat: ahoraValidacion,
@@ -1712,18 +1705,22 @@ export async function completarVinculacionSegundoDispositivo(
           sistemaOperativo: datosDispositivo.sistemaOperativo,
         }),
 
-        ...(datosDispositivo.ip !== undefined && { ip: datosDispositivo.ip }),
+        ...(datosDispositivo.ip !== undefined && {
+          ip: datosDispositivo.ip,
+        }),
       },
     });
 
+    // 8. Registrar el evento de seguridad.
     await tx.eventoSeguridad.create({
       data: {
         usuarioId: solicitud.usuarioId,
         tipo: "DISPOSITIVO_VINCULADO",
-
         descripcion: "Segundo dispositivo vinculado a la sesión compartida",
 
-        ...(datosDispositivo.ip !== undefined && { ip: datosDispositivo.ip }),
+        ...(datosDispositivo.ip !== undefined && {
+          ip: datosDispositivo.ip,
+        }),
 
         ...(datosDispositivo.dispositivo !== undefined && {
           dispositivo: datosDispositivo.dispositivo,
@@ -1731,10 +1728,17 @@ export async function completarVinculacionSegundoDispositivo(
       },
     });
 
-    return { venceEn: sesion.venceEn, sesionId: sesion.id };
+    return {
+      venceEn: sesion.venceEn,
+      sesionId: sesion.id,
+    };
   });
 
-  return { token, expiresAt: resultado.venceEn, sesionId: resultado.sesionId };
+  return {
+    token,
+    expiresAt: resultado.venceEn,
+    sesionId: resultado.sesionId,
+  };
 }
 
 // ------------------------------------------------------
@@ -1841,140 +1845,159 @@ export async function getCurrentUser(userId: string) {
 
 export async function consultarEstadoSolicitudSegundoDispositivo(
   solicitudId: string,
-
   challengeToken: string,
 ) {
   if (!solicitudId || !challengeToken || challengeToken.length < 32) {
     throw new Error("Solicitud de acceso inválida");
   }
 
-  const solicitud = await prisma.solicitudAcceso.findFirst({
-    where: {
-      id: solicitudId,
+  const challengeTokenHash = calcularHashToken(challengeToken);
 
-      challengeTokenHash: calcularHashToken(challengeToken),
-    },
+  return prisma.$transaction(async (tx) => {
+    const ahora = new Date();
 
-    select: {
-      id: true,
+    const solicitud = await tx.solicitudAcceso.findFirst({
+      where: {
+        id: solicitudId,
+        challengeTokenHash,
+      },
+      select: {
+        id: true,
+        usuarioId: true,
+        estado: true,
+        emailVerificadoEn: true,
+        venceEn: true,
+      },
+    });
 
-      estado: true,
+    if (!solicitud) {
+      throw new Error("La solicitud no existe o no es válida");
+    }
 
-      emailVerificadoEn: true,
-
-      venceEn: true,
-    },
-  });
-
-  if (!solicitud) {
-    throw new Error("La solicitud no existe o no es válida");
-  }
-
-  const ahora = new Date();
-
-  // Si venció, persistimos el estado EXPIRADA en la base de datos.
-
-  if (
-    solicitud.venceEn <= ahora &&
-    ["PENDIENTE", "APROBADA"].includes(solicitud.estado)
-  ) {
-    await prisma.$transaction(async (tx) => {
+    // Comprobar si venció una solicitud todavía pendiente o aprobada.
+    if (
+      solicitud.venceEn <= ahora &&
+      ["PENDIENTE", "APROBADA"].includes(solicitud.estado)
+    ) {
       const actualizacion = await tx.solicitudAcceso.updateMany({
         where: {
           id: solicitud.id,
-
+          challengeTokenHash,
           estado: solicitud.estado,
-
-          venceEn: {
-            lte: ahora,
-          },
+          venceEn: { lte: ahora },
         },
-
         data: {
           estado: "EXPIRADA",
-
           codigoAprobacionHash: null,
-
           codigoAprobacionCifrado: null,
         },
       });
 
-      if (actualizacion.count > 0) {
+      if (actualizacion.count === 1) {
         await tx.codigoVerificacion.updateMany({
           where: {
             solicitudAccesoId: solicitud.id,
-
-            estado: {
-              in: ["PENDIENTE", "BLOQUEADO"],
-            },
+            estado: { in: ["PENDIENTE", "BLOQUEADO"] },
           },
-
           data: {
             estado: "EXPIRADO",
           },
         });
+
+        await tx.eventoSeguridad.create({
+          data: {
+            usuarioId: solicitud.usuarioId,
+            tipo: "SOLICITUD_ACCESO_EXPIRADA",
+            descripcion:
+              "La solicitud de acceso de un segundo dispositivo venció sin completar la vinculación",
+          },
+        });
+
+        return {
+          estado: "EXPIRED" as const,
+          mensaje: "La solicitud de acceso ha vencido",
+        };
       }
-    });
 
-    return {
-      estado: "EXPIRED" as const,
+      // Otra operación modificó la solicitud.
+      // Consultamos nuevamente su estado real.
+      const solicitudActualizada = await tx.solicitudAcceso.findFirst({
+        where: {
+          id: solicitud.id,
+          challengeTokenHash,
+        },
+        select: {
+          estado: true,
+          emailVerificadoEn: true,
+        },
+      });
 
-      mensaje: "La solicitud de acceso ha vencido",
-    };
-  }
+      if (!solicitudActualizada) {
+        throw new Error("La solicitud ya no existe o no es válida");
+      }
 
-  if (solicitud.estado === "RECHAZADA") {
+      return obtenerEstadoSolicitud(
+        solicitudActualizada.estado,
+        solicitudActualizada.emailVerificadoEn,
+      );
+    }
+
+    return obtenerEstadoSolicitud(
+      solicitud.estado,
+      solicitud.emailVerificadoEn,
+    );
+  });
+}
+
+function obtenerEstadoSolicitud(
+  estado: string,
+  emailVerificadoEn: Date | null,
+) {
+  if (estado === "RECHAZADA") {
     return {
       estado: "REJECTED" as const,
-
       mensaje: "El dispositivo principal rechazó el acceso",
     };
   }
 
-  if (solicitud.estado === "CANCELADA") {
+  if (estado === "CANCELADA") {
     return {
       estado: "CANCELLED" as const,
-
       mensaje: "La solicitud fue cancelada",
     };
   }
 
-  if (solicitud.estado === "EXPIRADA") {
+  if (estado === "EXPIRADA") {
     return {
       estado: "EXPIRED" as const,
-
       mensaje: "La solicitud de acceso ha vencido",
     };
   }
 
-  if (solicitud.estado === "COMPLETADA") {
+  if (estado === "COMPLETADA") {
     return {
       estado: "COMPLETED" as const,
-
       mensaje: "El dispositivo ya fue vinculado",
     };
   }
 
-  if (!solicitud.emailVerificadoEn) {
+  if (!emailVerificadoEn) {
     return {
       estado: "PENDING_EMAIL" as const,
-
       mensaje: "Esperando la verificación del correo electrónico",
     };
   }
 
-  if (solicitud.estado === "PENDIENTE") {
+  if (estado === "PENDIENTE") {
     return {
       estado: "PENDING_APPROVAL" as const,
-
       mensaje: "Esperando la aprobación del dispositivo principal",
     };
   }
 
-  if (solicitud.estado === "APROBADA") {
+  if (estado === "APROBADA") {
     return {
       estado: "APPROVED" as const,
-
       mensaje: "Acceso aprobado. Ya podés completar la vinculación",
     };
   }

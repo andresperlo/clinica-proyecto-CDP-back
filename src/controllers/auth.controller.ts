@@ -361,6 +361,7 @@ export async function verificarCodigoController(req: Request, res: Response) {
       solicitudId,
       codigo,
       challengeToken,
+      obtenerDatosDispositivo(req),
     );
 
     res.status(200).json({

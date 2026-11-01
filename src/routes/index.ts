@@ -1,12 +1,18 @@
 import { Router } from "express";
 import { prisma } from "../lib/prisma.js";
+
 import authRoutes from "./auth.routes.js";
+import seguridadRoutes from "./seguridad.routes.js";
 
 const router = Router();
 
+// Autenticación.
 router.use("/auth", authRoutes);
 
-// Estado general de la API
+// Seguridad e historial.
+router.use("/seguridad", seguridadRoutes);
+
+// Estado general de la API.
 router.get("/health", (_req, res) => {
   res.status(200).json({
     success: true,
@@ -15,7 +21,7 @@ router.get("/health", (_req, res) => {
   });
 });
 
-// Comprobar conexión real con PostgreSQL
+// Comprobar conexión real con PostgreSQL.
 router.get("/health/db", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;

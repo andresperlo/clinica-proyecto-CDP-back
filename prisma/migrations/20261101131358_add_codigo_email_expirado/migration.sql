@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "TipoEventoSeguridad" ADD VALUE 'CODIGO_EMAIL_EXPIRADO';
