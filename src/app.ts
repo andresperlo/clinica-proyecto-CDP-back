@@ -7,6 +7,7 @@ import cookieParser from "cookie-parser";
 import apiRoutes from "./routes/index.js";
 
 const app = express();
+app.set("trust proxy", 1);
 
 const FRONTEND_URL = process.env.FRONTEND_URL;
 

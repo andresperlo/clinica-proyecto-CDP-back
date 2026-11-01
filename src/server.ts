@@ -141,10 +141,13 @@ async function revisarSesionesActivas(): Promise<void> {
       }
 
       // 5. Comprobar la última señal del dispositivo principal.
-      const ultimaSenal =
-        sesion.ultimoHeartbeat ??
-        principal.ultimoHeartbeat ??
-        principal.creadoEn;
+      const ultimaSenal = [
+        sesion.ultimoHeartbeat,
+        principal.ultimoHeartbeat,
+        principal.creadoEn,
+      ]
+        .filter((fecha): fecha is Date => fecha !== null)
+        .reduce((ultima, fecha) => (fecha > ultima ? fecha : ultima));
 
       const tiempoSinSenal = ahora.getTime() - ultimaSenal.getTime();
 

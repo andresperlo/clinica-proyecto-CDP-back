@@ -205,10 +205,13 @@ export async function verificarToken(
       // Las peticiones normales NO actualizan el heartbeat.
       // Solamente el endpoint dedicado /heartbeat puede hacerlo.
       if (!dispositivo.esPrincipal) {
-        const ultimaSenal =
-          sesion.ultimoHeartbeat ??
-          principal.ultimoHeartbeat ??
-          principal.creadoEn;
+        const ultimaSenal = [
+          sesion.ultimoHeartbeat,
+          principal.ultimoHeartbeat,
+          principal.creadoEn,
+        ]
+          .filter((fecha): fecha is Date => fecha !== null)
+          .reduce((ultima, fecha) => (fecha > ultima ? fecha : ultima));
 
         const tiempoSinSenal = ahora.getTime() - ultimaSenal.getTime();
 

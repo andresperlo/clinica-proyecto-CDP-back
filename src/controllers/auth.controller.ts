@@ -11,6 +11,7 @@ import {
   listarSolicitudesPendientesSegundoDispositivo,
   aprobarSegundoDispositivo,
   rechazarSegundoDispositivo,
+  cancelarSolicitudSegundoDispositivo,
   completarVinculacionSegundoDispositivo,
   registrarHeartbeatPrincipal,
   consultarEstadoSolicitudSegundoDispositivo,
@@ -589,6 +590,58 @@ export async function rechazarSegundoDispositivoController(
 }
 
 // ------------------------------------------------------
+// CANCELAR SOLICITUD DEL SEGUNDO DISPOSITIVO
+// ------------------------------------------------------
+
+export async function cancelarSolicitudController(req: Request, res: Response) {
+  const { solicitudId } = req.body ?? {};
+
+  const challengeToken = req.cookies?.[CHALLENGE_COOKIE_NAME];
+
+  if (
+    typeof solicitudId !== "string" ||
+    !solicitudId.trim() ||
+    typeof challengeToken !== "string" ||
+    !challengeToken
+  ) {
+    res.status(400).json({
+      success: false,
+      message: "La solicitud o la autorización temporal no son válidas",
+    });
+    return;
+  }
+
+  try {
+    const resultado = await cancelarSolicitudSegundoDispositivo(
+      solicitudId,
+      challengeToken,
+    );
+
+    if (resultado.cancelada) {
+      limpiarChallengeCookie(res);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: resultado.mensaje,
+      data: {
+        cancelada: resultado.cancelada,
+      },
+    });
+  } catch (error) {
+    console.error("Error al cancelar la solicitud de acceso.");
+
+    res.status(400).json({
+      success: false,
+      message:
+        error instanceof Error
+          ? error.message
+          : "No se pudo cancelar la solicitud",
+    });
+  }
+}
+
+// ------------------------------------------------------
 // COMPLETAR VINCULACIÓN DEL SEGUNDO DISPOSITIVO
 // ------------------------------------------------------
 
@@ -860,6 +913,12 @@ export async function consultarEstadoSolicitudController(
       solicitudId,
       challengeToken,
     );
+
+    const estadosFinales = ["REJECTED", "EXPIRED", "CANCELLED", "COMPLETED"];
+
+    if (estadosFinales.includes(resultado.estado)) {
+      limpiarChallengeCookie(res);
+    }
 
     res.status(200).json({
       success: true,

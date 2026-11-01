@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "TipoEventoSeguridad" ADD VALUE 'SEGUNDO_DISPOSITIVO_CANCELADO';
