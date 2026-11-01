@@ -33,16 +33,15 @@ const DURACION_SOLICITUD_MS = 10 * 60 * 1000;
 
 const cookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  secure: true,
+  sameSite: "none" as const,
   path: "/",
   maxAge: DURACION_SESION_MS,
 };
-
 const challengeCookieOptions = {
   httpOnly: true,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax" as const,
+  secure: true,
+  sameSite: "none" as const,
   path: "/",
   maxAge: DURACION_SOLICITUD_MS,
 };
@@ -54,8 +53,8 @@ const challengeCookieOptions = {
 function limpiarCookie(res: Response) {
   res.clearCookie(COOKIE_NAME, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: true,
+    sameSite: "none",
     path: "/",
   });
 }
@@ -63,12 +62,11 @@ function limpiarCookie(res: Response) {
 function limpiarChallengeCookie(res: Response) {
   res.clearCookie(CHALLENGE_COOKIE_NAME, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: true,
+    sameSite: "none",
     path: "/",
   });
 }
-
 function calcularHashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
