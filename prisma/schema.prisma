@@ -1,4 +1,3 @@
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -31,6 +30,64 @@ enum TipoProfesional {
   OTRO
 }
 
+enum EstadoSesion {
+  ACTIVA
+  REVOCADA
+  VENCIDA
+}
+
+enum EstadoDispositivo {
+  ACTIVO
+  DESCONECTADO
+  REVOCADO
+}
+
+enum EstadoSolicitudAcceso {
+  PENDIENTE
+  APROBADA
+  COMPLETADA
+  RECHAZADA
+  EXPIRADA
+  CANCELADA
+}
+
+enum EstadoCodigoVerificacion {
+  PENDIENTE
+  UTILIZADO
+  EXPIRADO
+  BLOQUEADO
+}
+
+enum EstadoRecuperacion {
+  PENDIENTE
+  APROBADA
+  RECHAZADA
+  COMPLETADA
+  CANCELADA
+}
+
+enum TipoEventoSeguridad {
+  LOGIN_EXITOSO
+  LOGIN_FALLIDO
+  LOGOUT
+  SESION_EXPIRADA
+  SESION_REVOCADA
+  DISPOSITIVO_VINCULADO
+  DISPOSITIVO_DESCONECTADO
+  DISPOSITIVO_REVOCADO
+  PRINCIPAL_DESCONECTADO
+  SEGUNDO_DISPOSITIVO_SOLICITADO
+  SEGUNDO_DISPOSITIVO_APROBADO
+  SEGUNDO_DISPOSITIVO_RECHAZADO
+  CODIGO_EMAIL_ENVIADO
+  CODIGO_EMAIL_VALIDADO
+  CODIGO_EMAIL_FALLIDO
+  RECUPERACION_SOLICITADA
+  RECUPERACION_APROBADA
+  RECUPERACION_RECHAZADA
+  PASSWORD_CAMBIADA
+}
+
 model Usuario {
   id            String        @id @default(uuid()) @db.Uuid
   nombre        String
@@ -42,21 +99,182 @@ model Usuario {
   creadoEn      DateTime      @default(now())
   actualizadoEn DateTime      @updatedAt
 
-  profesional   Profesional?
+  profesional         Profesional?
+  sesiones            Sesion[]
+  dispositivos        Dispositivo[]
+  solicitudesAcceso   SolicitudAcceso[]
+  codigosVerificacion CodigoVerificacion[]
+  recuperaciones      SolicitudRecuperacion[]
+  eventosSeguridad    EventoSeguridad[]
 
   @@map("usuarios")
 }
 
 model Profesional {
-  id            String           @id @default(uuid()) @db.Uuid
-  usuarioId     String           @unique @db.Uuid
+  id            String          @id @default(uuid()) @db.Uuid
+  usuarioId     String          @unique @db.Uuid
   tipo          TipoProfesional
   matricula     String?
-  activo        Boolean          @default(true)
-  creadoEn      DateTime         @default(now())
-  actualizadoEn DateTime         @updatedAt
+  activo        Boolean         @default(true)
+  creadoEn      DateTime        @default(now())
+  actualizadoEn DateTime        @updatedAt
 
-  usuario       Usuario          @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
 
   @@map("profesionales")
+}
+
+// Sesión lógica compartida por todos los dispositivos.
+model Sesion {
+  id        String       @id @default(uuid()) @db.Uuid
+  usuarioId String       @db.Uuid
+  estado    EstadoSesion @default(ACTIVA)
+
+  creadoEn         DateTime  @default(now())
+  venceEn          DateTime
+  revocadoEn       DateTime?
+  motivoRevocacion String?
+
+  // Identificador del dispositivo principal.
+  dispositivoPrincipalId  String?   @unique @db.Uuid
+  principalDesconectadoEn DateTime?
+  ultimoHeartbeat         DateTime?
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  // Todos los dispositivos vinculados a esta sesión.
+  dispositivos Dispositivo[] @relation("SesionDispositivos")
+
+  // Dispositivo que tiene el rol de principal.
+  dispositivoPrincipal Dispositivo? @relation("DispositivoPrincipal", fields: [dispositivoPrincipalId], references: [id], onDelete: SetNull)
+
+  // Solicitudes aprobadas desde esta sesión.
+  solicitudesAprobadas SolicitudAcceso[] @relation("SolicitudAprobadaPorSesion")
+
+  @@index([usuarioId, estado])
+  @@index([venceEn])
+  @@map("sesiones")
+}
+
+// Cada dispositivo tiene su propio token y comparte la sesión lógica.
+model Dispositivo {
+  id        String @id @default(uuid()) @db.Uuid
+  usuarioId String @db.Uuid
+  sesionId  String @db.Uuid
+
+  tokenHash   String            @unique
+  estado      EstadoDispositivo @default(ACTIVO)
+  esPrincipal Boolean           @default(false)
+
+  nombre           String?
+  tipo             String?
+  navegador        String?
+  sistemaOperativo String?
+  ip               String?
+
+  creadoEn        DateTime  @default(now())
+  ultimoHeartbeat DateTime?
+  desconectadoEn  DateTime?
+  revocadoEn      DateTime?
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  sesion  Sesion  @relation("SesionDispositivos", fields: [sesionId], references: [id], onDelete: Cascade)
+
+  // Relación inversa: sesión en la que este dispositivo es principal.
+  sesionComoPrincipal Sesion? @relation("DispositivoPrincipal")
+
+  @@index([usuarioId, estado])
+  @@index([sesionId, estado])
+  @@index([sesionId, esPrincipal])
+  @@map("dispositivos")
+}
+
+model SolicitudAcceso {
+  id        String                @id @default(uuid()) @db.Uuid
+  usuarioId String                @db.Uuid
+  estado    EstadoSolicitudAcceso @default(PENDIENTE)
+
+  dispositivo      String?
+  navegador        String?
+  sistemaOperativo String?
+  ip               String?
+
+  // Hash del código numérico de confirmación.
+  codigoAprobacionHash    String?
+  codigoAprobacionCifrado String?
+
+  // Hash del secreto temporal que identifica la solicitud.
+  challengeTokenHash String? @unique
+
+  venceEn           DateTime
+  creadaEn          DateTime  @default(now())
+  emailVerificadoEn DateTime?
+  aprobadaEn        DateTime?
+  completadaEn      DateTime?
+  rechazadaEn       DateTime?
+
+  aprobadaPorSesionId String? @db.Uuid
+
+  usuario          Usuario              @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  sesionAprobadora Sesion?              @relation("SolicitudAprobadaPorSesion", fields: [aprobadaPorSesionId], references: [id], onDelete: SetNull)
+  codigos          CodigoVerificacion[]
+
+  @@index([usuarioId, estado])
+  @@index([venceEn])
+  @@index([aprobadaPorSesionId])
+  @@map("solicitudes_acceso")
+}
+
+model CodigoVerificacion {
+  id                String                   @id @default(uuid()) @db.Uuid
+  usuarioId         String                   @db.Uuid
+  solicitudAccesoId String                   @db.Uuid
+  codigoHash        String
+  estado            EstadoCodigoVerificacion @default(PENDIENTE)
+  intentos          Int                      @default(0)
+  venceEn           DateTime
+  bloqueadoHasta    DateTime?
+  utilizadoEn       DateTime?
+  creadoEn          DateTime                 @default(now())
+
+  usuario         Usuario         @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  solicitudAcceso SolicitudAcceso @relation(fields: [solicitudAccesoId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId, estado])
+  @@index([solicitudAccesoId, estado])
+  @@index([venceEn])
+  @@index([bloqueadoHasta])
+  @@map("codigos_verificacion")
+}
+
+model SolicitudRecuperacion {
+  id           String             @id @default(uuid()) @db.Uuid
+  usuarioId    String             @db.Uuid
+  estado       EstadoRecuperacion @default(PENDIENTE)
+  motivo       String?
+  solicitadoEn DateTime           @default(now())
+  revisadoEn   DateTime?
+  revisadoPor  String?            @db.Uuid
+  completadoEn DateTime?
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId, estado])
+  @@map("solicitudes_recuperacion")
+}
+
+model EventoSeguridad {
+  id          String              @id @default(uuid()) @db.Uuid
+  usuarioId   String?             @db.Uuid
+  tipo        TipoEventoSeguridad
+  descripcion String?
+  ip          String?
+  dispositivo String?
+  creadoEn    DateTime            @default(now())
+
+  usuario Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([usuarioId, creadoEn])
+  @@index([tipo, creadoEn])
+  @@map("eventos_seguridad")
 }
