@@ -322,7 +322,7 @@ function generarOpcionesAprobacion(): {
  */
 
 async function bloquearSesion(tx: any, sesionId: string) {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`session:${sesionId}`}, 2))`;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`session:${sesionId}`}, 2))`;
 }
 
 // ------------------------------------------------------
@@ -417,7 +417,7 @@ async function crearSesion(
   const sesion = await prisma.$transaction(async (tx) => {
     // Evita que dos logins simultáneos creen dos sesiones principales.
 
-    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${usuarioId}, 0))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${usuarioId}, 0))`;
 
     // Buscar sesiones anteriores que ya vencieron.
 
@@ -785,11 +785,11 @@ export async function solicitarCodigoSegundoDispositivo(
 
   // Serializar todas las solicitudes del mismo usuario.
   const solicitud = await prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`
-      SELECT pg_advisory_xact_lock(
-        hashtextextended(${usuarioId}, 1)
-      )
-    `;
+    await tx.$executeRaw`
+  SELECT pg_advisory_xact_lock(
+    hashtextextended(${usuarioId}, 1)
+  )
+`;
 
     // Comprobar que exista un dispositivo principal autorizado.
     const sesionActiva = await tx.sesion.findFirst({

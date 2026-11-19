@@ -3,6 +3,9 @@ import { prisma } from "../lib/prisma.js";
 
 import authRoutes from "./auth.routes.js";
 import seguridadRoutes from "./seguridad.routes.js";
+import controlPesoRoutes from "./controlPeso.routes.js";
+import servicioRoutes from "./servicio.routes.js";
+import agendaRoutes from "./agenda.routes.js";
 
 const router = Router();
 
@@ -11,6 +14,14 @@ router.use("/auth", authRoutes);
 
 // Seguridad e historial.
 router.use("/seguridad", seguridadRoutes);
+
+// Controles de peso y evolución del paciente.
+router.use("/controles-peso", controlPesoRoutes);
+
+// Servicios y permisos de servicios para pacientes.
+router.use("/servicios", servicioRoutes);
+
+router.use("/agenda", agendaRoutes);
 
 // Estado general de la API.
 router.get("/health", (_req, res) => {

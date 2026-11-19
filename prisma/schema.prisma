@@ -92,6 +92,44 @@ enum TipoEventoSeguridad {
   PASSWORD_CAMBIADA
 }
 
+enum EstadoTurno {
+  PENDIENTE
+  CONFIRMADO
+  CANCELADO
+}
+
+enum OrigenTurno {
+  SECRETARIA
+  PACIENTE
+}
+
+enum CanalTurno {
+  WEB
+  WHATSAPP
+  SISTEMA
+}
+
+enum TipoEventoTurno {
+  CREADO
+  CONFIRMADO
+  CANCELADO
+}
+
+enum DiaSemana {
+  LUNES
+  MARTES
+  MIERCOLES
+  JUEVES
+  VIERNES
+  SABADO
+  DOMINGO
+}
+
+enum TipoExcepcionAgenda {
+  CERRADO
+  HORARIO_ESPECIAL
+}
+
 model Usuario {
   id            String        @id @default(uuid()) @db.Uuid
   nombre        String
@@ -102,6 +140,7 @@ model Usuario {
   estado        EstadoUsuario @default(ACTIVO)
   creadoEn      DateTime      @default(now())
   actualizadoEn DateTime      @updatedAt
+  celular       String?
 
   profesional         Profesional?
   sesiones            Sesion[]
@@ -110,6 +149,17 @@ model Usuario {
   codigosVerificacion CodigoVerificacion[]
   recuperaciones      SolicitudRecuperacion[]
   eventosSeguridad    EventoSeguridad[]
+
+  controlesPesoPaciente    ControlPeso[] @relation("PacienteControlesPeso")
+  controlesPesoProfesional ControlPeso[] @relation("ProfesionalControlesPeso")
+
+  turnosPaciente          Turno[]                  @relation("PacienteTurnos")
+  turnosProfesional       Turno[]                  @relation("ProfesionalTurnos")
+  serviciosHabilitados    AccesoServicioPaciente[] @relation("PacienteServicios")
+  serviciosHabilitadosPor AccesoServicioPaciente[] @relation("ServiciosHabilitadosPor")
+  turnosCreados           Turno[]                  @relation("TurnoCreadoPor")
+  eventosTurno            EventoTurno[]
+  excepcionesAgendaCreadas ExcepcionAgenda[]
 
   @@map("usuarios")
 }
@@ -126,6 +176,26 @@ model Profesional {
   usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
 
   @@map("profesionales")
+}
+
+model ControlPeso {
+  id String @id @default(uuid()) @db.Uuid
+
+  pacienteId    String @db.Uuid
+  profesionalId String @db.Uuid
+
+  pesoKg       Decimal  @db.Decimal(6, 3)
+  alturaMetros Decimal? @db.Decimal(4, 2)
+
+  fechaControl  DateTime @default(now())
+  observaciones String?
+
+  paciente    Usuario @relation("PacienteControlesPeso", fields: [pacienteId], references: [id], onDelete: Cascade)
+  profesional Usuario @relation("ProfesionalControlesPeso", fields: [profesionalId], references: [id], onDelete: Restrict)
+
+  @@index([pacienteId, fechaControl])
+  @@index([profesionalId, fechaControl])
+  @@map("controles_peso")
 }
 
 // Sesión lógica compartida por todos los dispositivos.
@@ -281,4 +351,128 @@ model EventoSeguridad {
   @@index([usuarioId, creadoEn])
   @@index([tipo, creadoEn])
   @@map("eventos_seguridad")
+}
+
+model Servicio {
+  id            String   @id @default(uuid()) @db.Uuid
+  nombre        String
+  descripcion   String?
+  codigo        String   @unique
+  activo        Boolean  @default(true)
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  accesosPaciente AccesoServicioPaciente[]
+  turnos          Turno[]
+
+  @@map("servicios")
+}
+
+model AccesoServicioPaciente {
+  id         String  @id @default(uuid()) @db.Uuid
+  pacienteId String  @db.Uuid
+  servicioId String  @db.Uuid
+  habilitado Boolean @default(true)
+
+  habilitadoPorId String   @db.Uuid
+  habilitadoEn    DateTime @default(now())
+  actualizadoEn   DateTime @updatedAt
+
+  paciente      Usuario  @relation("PacienteServicios", fields: [pacienteId], references: [id], onDelete: Cascade)
+  servicio      Servicio @relation(fields: [servicioId], references: [id], onDelete: Cascade)
+  habilitadoPor Usuario  @relation("ServiciosHabilitadosPor", fields: [habilitadoPorId], references: [id], onDelete: Restrict)
+
+  @@unique([pacienteId, servicioId])
+  @@index([pacienteId, habilitado])
+  @@index([servicioId, habilitado])
+  @@map("accesos_servicios_pacientes")
+}
+
+model Turno {
+  id String @id @default(uuid()) @db.Uuid
+
+  pacienteId    String  @db.Uuid
+  servicioId    String  @db.Uuid
+  profesionalId String? @db.Uuid
+
+  fechaHora DateTime
+
+  estado EstadoTurno @default(PENDIENTE)
+  origen OrigenTurno
+
+  creadoPorId   String?  @db.Uuid
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  paciente    Usuario  @relation("PacienteTurnos", fields: [pacienteId], references: [id], onDelete: Cascade)
+  servicio    Servicio @relation(fields: [servicioId], references: [id], onDelete: Restrict)
+  profesional Usuario? @relation("ProfesionalTurnos", fields: [profesionalId], references: [id], onDelete: Restrict)
+  creadoPor   Usuario? @relation("TurnoCreadoPor", fields: [creadoPorId], references: [id], onDelete: SetNull)
+
+  eventos EventoTurno[]
+
+  @@index([pacienteId, fechaHora])
+  @@index([profesionalId, fechaHora])
+  @@index([servicioId, fechaHora])
+  @@index([estado, fechaHora])
+  @@map("turnos")
+}
+
+model EventoTurno {
+  id String @id @default(uuid()) @db.Uuid
+
+  turnoId   String  @db.Uuid
+  usuarioId String? @db.Uuid
+
+  tipo  TipoEventoTurno
+  canal CanalTurno
+
+  creadoEn DateTime @default(now())
+
+  turno   Turno    @relation(fields: [turnoId], references: [id], onDelete: Cascade)
+  usuario Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([turnoId, creadoEn])
+  @@index([usuarioId, creadoEn])
+  @@map("eventos_turno")
+}
+
+model HorarioClinica {
+  id String @id @default(uuid()) @db.Uuid
+
+  diaSemana DiaSemana
+
+  horaApertura DateTime? @db.Time(0)
+  horaCierre   DateTime? @db.Time(0)
+
+  habilitado Boolean @default(true)
+
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  @@unique([diaSemana])
+  @@map("horarios_clinica")
+}
+
+model ExcepcionAgenda {
+  id String @id @default(uuid()) @db.Uuid
+
+  fecha DateTime @db.Date
+
+  tipo TipoExcepcionAgenda
+
+  horaApertura DateTime? @db.Time(0)
+  horaCierre   DateTime? @db.Time(0)
+
+  motivo String
+
+  creadoPorId String @db.Uuid
+  creadoEn    DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+
+  creadoPor Usuario @relation(fields: [creadoPorId], references: [id], onDelete: Restrict)
+
+  @@unique([fecha])
+  @@index([fecha])
+  @@map("excepciones_agenda")
 }

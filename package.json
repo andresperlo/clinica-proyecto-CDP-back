@@ -14,7 +14,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "seed:services": "node --env-file=.env --import tsx src/services/seed-services.ts",
+    "seed:agenda": "node --env-file=.env --import tsx src/services/seed-agenda.ts"
   },
   "keywords": [],
   "author": "",
